@@ -1,69 +1,105 @@
-#!/usr/bin/env python3
 import os
 import sys
+import time  # FIX 1: Missing import must be present for time.sleep to work
 from google import genai
 from google.genai import types
+# Import our freshly verified local RAG engine
+from rag_engine import RAGEngine
 
-def start_tutor_session():
-    """
-    Initializes a stateful chat session with embedded system instructions
-    to enforce a supportive, peer-developer Socratic tutoring persona.
-    """
-    if not os.environ.get("GEMINI_API_KEY"):
-        print("CRITICAL ERROR: GEMINI_API_KEY not found in environment.", file=sys.stderr)
-        sys.exit(1)
 
-    # 1. Define the behavioral boundary conditions
-    socratic_instruction = """
-    You are a supportive, technical peer-developer serving as a Socratic Tutor. 
-    Your goal is to guide the user to deep programming insights.
-    
-    CRITICAL RULES:
-    1. NEVER provide direct code solutions, full code blocks, or direct answers.
-    2. Respond by breaking concepts down and asking exactly ONE clarifying or guiding question.
-    3. Keep your responses technical, concise, and focused on the immediate conceptual step.
-    """
+class RAGConversationalTutor:
+    def __init__(self, system_instruction_path="prompts/system_instructions/socratic_tutor_v1.md"):
+        """
+        Initializes the Socratic Tutor with integrated RAG context retrieval.
+        """
+        print("🛠️  Initializing Socratic Tutor with RAG Core...")
+        # 1. Boot up the local Vector Database client
+        self.rag = RAGEngine()
 
-    # 2. Initialize client and configure runtime parameters
-    client = genai.Client()
-    config = types.GenerateContentConfig(
-        system_instruction=socratic_instruction,
-        temperature=0.7,  # Balanced for conversational variety and rule adherence
-    )
+        # 2. Boot up the primary Gemini intelligence client
+        self.ai_client = genai.Client()
 
-    print("============================================================")
-    print("🎓 SOCRATIC TUTOR ACTIVE: Type 'exit' or 'quit' to end session.")
-    print("============================================================\n")
+        # FIX 2: Downgrade from 'pro' to 'flash' to leverage wider Free Tier API lanes
+        self.model_name = "gemini-2.5-flash"
 
-    # 3. Create the stateful chat manager object
-    # This automatically tracks the history array behind the scenes
-    chat = client.chats.create(model="gemini-2.5-flash", config=config)
+        # 3. Load our foundational Socratic rules
+        self.system_instruction = self._load_system_instruction(system_instruction_path)
 
-    # 4. Enter the interactive REPL (Read-Eval-Print Loop)
+        # 4. Spin up our stateful conversation manager
+        self.chat = self.ai_client.chats.create(
+            model=self.model_name,
+            config=types.GenerateContentConfig(
+                system_instruction=self.system_instruction,
+                temperature=0.2  # Kept low for deterministic engineering focus
+            )
+        )
+
+    def _load_system_instruction(self, path: str) -> str:
+        if not os.path.exists(path):
+            print(f"⚠️  Warning: System instruction file not found at {path}. Falling back to default.")
+            return "You are a helpful Socratic tutor."
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def interact(self, user_message: str):
+        """
+        Queries the database for background context, builds an augmented
+        payload, and streams the Socratic response to the terminal.
+        """
+        # STEP 1: Intercept & Retrieve
+        print("\n🔍 Searching local knowledge base for context...")
+        relevant_chunks = self.rag.query_knowledge(user_message, n_results=1)
+
+        # STEP 2: Augment the payload if context is found
+        augmented_prompt = ""
+        if relevant_chunks:
+            context_block = "\n".join(relevant_chunks)
+            augmented_prompt = (
+                f"Use the following ground-truth context to guide your Socratic questioning:\n"
+                f"<context>\n{context_block}\n</context>\n\n"
+                f"User Question: {user_message}"
+            )
+            print("🎯 Relevant context found and injected into prompt stream.")
+        else:
+            augmented_prompt = user_message
+            print("ℹ️  No specific context found. Processing message natively.")
+
+        # STEP 3: Generate using immediate streaming
+        print("🤖 Tutor thinking...\n")
+        response_stream = self.chat.send_message_stream(augmented_prompt)
+
+        # Flush response blocks directly to stdout for fluid terminal interaction
+        for chunk in response_stream:
+            sys.stdout.write(chunk.text)
+            sys.stdout.flush()
+        print("\n")
+
+
+def main():
+    # Quick execution entry point to interact with your upgraded tutor
+    tutor = RAGConversationalTutor()
+    print("🎓 Socratic Tutor RAG-Engine is fully active.")
+    print("Type 'exit' or 'quit' to terminate the session.\n")
+
     while True:
         try:
-            user_input = input("\nYou ➜ ")
-            if user_input.strip().lower() in ['exit', 'quit']:
-                print("\nClosing session. Great work today, developer!")
+            user_input = input("You: ")
+            if user_input.lower() in ["exit", "quit"]:
+                print("Closing tutor workspace. System state conserved.")
                 break
-                
             if not user_input.strip():
                 continue
 
-            print("Tutor ➜ ", end="", flush=True)
+            tutor.interact(user_input)
 
-            # Send message using the chat state object
-            response_stream = chat.send_message_stream(user_input)
-            
-            for chunk in response_stream:
-                print(chunk.text, end="", flush=True)
-            print()
+            # Guard delay: Artificially space out sequential requests to satisfy the free tier limits
+            print("\n⏳ Cooling down request limits...")
+            time.sleep(15)
 
         except KeyboardInterrupt:
-            print("\nSession interrupted. Exiting cleanly.")
+            print("\nSession safely interrupted.")
             break
-        except Exception as e:
-            print(f"\nAn error occurred: {e}", file=sys.stderr)
+
 
 if __name__ == "__main__":
-    start_tutor_session()
+    main()
